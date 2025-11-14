@@ -76,20 +76,6 @@ matches preprocessing during model export.
 
 ------------------------------------------------------------------------
 
-## 4. Converting the TFLite Model Into a `.h` File
-
-To embed the TFLite model inside Arduino firmware, it must be converted
-to a C array:
-
-``` bash
-xxd -i model.tflite > model.h
-```
-
-Windows does not include `xxd` by default, so a Python script or Git
-Bash is required.
-
-------------------------------------------------------------------------
-
 ## Training Pipeline
 
 The TensorFlow model is a lightweight CNN:
@@ -131,7 +117,7 @@ A typical output:
 
 ## Files in This Repository
 
--   `train_model.py` --- Complete training + conversion script.
+-   `BuildingModel.py` --- Complete training + conversion script.
 
 -   `cloud_classification_model_int8.tflite` --- Quantized model.
 
@@ -152,19 +138,3 @@ A typical output:
 -   The biggest challenges are memory constraints---not accuracy.
 -   Preprocessing strategy must be consistent between Python/TFLite and
     Arduino.
--   Converting `.tflite` → `.h` can be OS‑dependent.
-
-------------------------------------------------------------------------
-
-## Future Improvements
-
--   Implement incremental streaming inference for lower RAM use.
--   Try depthwise-separable CNNs (MobileNet‑style).
--   Add more cloud categories (e.g., overcast, stormy, sunrise).
--   Optimize on-device resizing for improved accuracy.
-
-------------------------------------------------------------------------
-
-## License
-
-MIT License -- See `LICENSE` for details.
