@@ -1,4 +1,22 @@
 #include <Arduino_OV767X.h>
+#include "model.h"
+
+#include <TensorFlowLite.h>
+#include <tensorflow/lite/micro/all_ops_resolver.h>
+#include <tensorflow/lite/micro/tflite_bridge/micro_error_reporter.h>
+#include <tensorflow/lite/micro/micro_interpreter.h>
+#include <tensorflow/lite/schema/schema_generated.h>
+#include "version.h"
+
+// global variables used for TensorFlow Lite (Micro)
+tflite::MicroErrorReporter tflErrorReporter;
+// pull in all the TFLM ops, can remove line and only pull in the TFLM ops you need, if need to reduce compiled size.
+tflite::AllOpsResolver tflOpsResolver;
+
+const tflite::Model* tflModel = nullptr;
+tflite::MicroInterpreter* tflInterpreter = nullptr;
+TfLiteTensor* tflInputTensor = nullptr;
+TfLiteTensor* tflOutputTensor = nullptr;
 
 unsigned short pixels[176 * 144]; // QCIF: 176x144 X 2 bytes per pixel (RGB565)
 unsigned char new_image[67500];
@@ -38,6 +56,7 @@ void crop_pad_convert_image(unsigned short *image, unsigned char *new_image, int
         new_image[added] = 0x00;
         added++;
     }
+    Serial.println(added);
 }
 
 void setup() {
