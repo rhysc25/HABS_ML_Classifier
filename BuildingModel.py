@@ -6,6 +6,9 @@ Capturing QCIF: 176x144 X 2 bytes per pixel (RGB565)
 Crop to 144x144 on board
 Scale to 150x150
 Feed to model, serial output 
+Output 0: clear
+Output 1: cloudy
+In the image output, hex of 0x30 means 48, which is 00110000
 """
 
 import tensorflow as tf
