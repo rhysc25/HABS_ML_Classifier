@@ -8,6 +8,10 @@
 #include <tensorflow/lite/schema/schema_generated.h>
 #include "version.h"
 
+
+// NOT COMPATIBLE WITH QUANTISATION YET
+
+
 // global variables used for TensorFlow Lite (Micro)
 tflite::MicroErrorReporter tflErrorReporter;
 // pull in all the TFLM ops, can remove line and only pull in the TFLM ops you need, if need to reduce compiled size.
@@ -18,14 +22,24 @@ tflite::MicroInterpreter* tflInterpreter = nullptr;
 TfLiteTensor* tflInputTensor = nullptr;
 TfLiteTensor* tflOutputTensor = nullptr;
 
-unsigned short pixels[176 * 144]; // QCIF: 176x144 X 2 bytes per pixel (RGB565)
-unsigned char new_image[67500];
+// Create a static memory buffer for TFLM, the size may need to
+// be adjusted based on the model you are using
+constexpr int tensorArenaSize = 120 * 1024;
+byte tensorArena[tensorArenaSize] __attribute__((aligned(16)));
 
-void crop_pad_convert_image(unsigned short *image, unsigned char *new_image, int image_size) {
+// array to map weather conditions index to a name
+const char* WEATHERS[] = {
+  "clear",
+  "cloudy"
+};
+
+unsigned short pixels[176 * 144]; // QCIF: 176x144 X 2 bytes per pixel (RGB565)
+
+void crop_pad_convert_image(unsigned short *image, TfLiteTensor* input, int image_size) {
     int added = 0;
     int i;
     for (i=0;i<1350;i++) {
-        new_image[added] = 0x00;
+        input->data.int8[added] = 0x00;
         added++;
     }
     
@@ -44,16 +58,16 @@ void crop_pad_convert_image(unsigned short *image, unsigned char *new_image, int
           unsigned char new_second_byte = (G6 << 2) | (G6 >> 4);     // G 0–255
           unsigned char new_third_byte  = (B5 << 3) | (B5 >> 2);     // B 0–255
           
-          new_image[added] = new_first_byte;
+          input->data.int8[added] = new_first_byte - 128;
           added++;
-          new_image[added] = new_second_byte;
+          input->data.int8[added] = new_second_byte - 128;
           added++;
-          new_image[added] = new_third_byte;
+          input->data.int8[added] = new_third_byte - 128;
           added++;
         }
     }
     for (i=0;i<1350;i++) {
-        new_image[added] = 0x00;
+        input->data.int8[added] = 0x00;
         added++;
     }
     Serial.println(added);
@@ -62,6 +76,44 @@ void crop_pad_convert_image(unsigned short *image, unsigned char *new_image, int
 void setup() {
   Serial.begin(9600);
   while (!Serial);
+
+  // get the TFL representation of the model byte array
+  tflModel = tflite::GetModel(model);
+  if (tflModel->version() != TFLITE_SCHEMA_VERSION) {
+    Serial.println("Model schema mismatch!");
+    while (1);
+  }
+
+  // Create an interpreter to run the model
+  //tflInterpreter = new tflite::MicroInterpreter(tflModel, tflOpsResolver, tensorArena, tensorArenaSize, &tflErrorReporter);
+  tflInterpreter = new tflite::MicroInterpreter(
+    tflModel,
+    tflOpsResolver,
+    tensorArena,
+    tensorArenaSize
+  );
+
+  // Allocate memory for the model's input and output tensors
+  tflInterpreter->AllocateTensors();
+
+  // For testing
+  Serial.print("Arena used: ");
+  Serial.println(tflInterpreter->arena_used_bytes());
+
+  Serial.print("Input tensor bytes: ");
+  Serial.println(tflInputTensor->bytes);
+
+  Serial.print("Input dims: ");
+  for (int i=0; i<tflInputTensor->dims->size; i++) {
+    Serial.print(tflInputTensor->dims->data[i]);
+    Serial.print(" ");
+  }
+  Serial.println();
+
+  // Get pointers for the model's input and output tensors
+  tflInputTensor = tflInterpreter->input(0);
+  tflOutputTensor = tflInterpreter->output(0);
+
 
   if (!Camera.begin(QCIF, RGB565, 1)) {
     Serial.println("Failed to initialize camera!");
@@ -75,6 +127,27 @@ void loop() {
 
     int numPixels = Camera.width() * Camera.height();
 
-    crop_pad_convert_image(pixels, new_image, numPixels);
+    crop_pad_convert_image(pixels, tflInputTensor, numPixels);
+
+    // Run inferencing
+    TfLiteStatus invokeStatus = tflInterpreter->Invoke();
+    if (invokeStatus != kTfLiteOk) {
+      Serial.println("Invoke failed!");
+      while (1);
+      return;
+    }
+
+    // Loop through the output tensor values from the model
+    for (int i = 0; i < 2; i++) {
+      int8_t value = tflOutputTensor->data.int8[i];
+      float score = (value - tflOutputTensor->params.zero_point) *
+                    tflOutputTensor->params.scale;
+
+      Serial.print(WEATHERS[i]);
+      Serial.print(": ");
+      Serial.println(score, 6);
+    }
+    Serial.println();
+
   }
 }
