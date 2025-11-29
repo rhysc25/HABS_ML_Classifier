@@ -20,16 +20,17 @@ from PIL import Image
 model = tf.keras.Sequential([
     tf.keras.Input(shape=(150,150,3)), # Defined the input shape for out image
     tf.keras.layers.Rescaling(scale=1./255), # Ensures all RGB values are between 0 and 1
-    tf.keras.layers.Conv2D(filters=8, kernel_size=(3,3), activation="relu"), # Uses 8 3x3 filters for edge detection
+    tf.keras.layers.Conv2D(filters=2, kernel_size=(3,3), activation="relu"), # Uses 8 3x3 filters for edge detection
     # ReLU removes negative values. Using for basic edge detection
     tf.keras.layers.MaxPooling2D(), #This takes the feature map and performs either min, max or average
     # on all the cells with the ones around it.
-    tf.keras.layers.Conv2D(filters=16, kernel_size=(3,3), activation="relu"), # Deeper combing for features
+    tf.keras.layers.Conv2D(filters=4, kernel_size=(3,3), activation="relu"), # Deeper combing for features
     tf.keras.layers.MaxPooling2D(),
-    tf.keras.layers.Conv2D(filters=32, kernel_size=(3,3), activation="relu"), # Even deeper combing for features
-    tf.keras.layers.MaxPooling2D(),
+    #tf.keras.layers.Conv2D(filters=16, kernel_size=(3,3), activation="relu"), # Even deeper combing for features
+    #tf.keras.layers.MaxPooling2D(),
     tf.keras.layers.Flatten(), 
-    tf.keras.layers.Dense(32, activation='relu'), 
+    #tf.keras.layers.Dense(32, activation='relu'),
+    tf.keras.layers.Dense(4, activation='relu'), 
     tf.keras.layers.Dense(2, activation='softmax')
 ]
 )

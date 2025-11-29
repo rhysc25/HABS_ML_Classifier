@@ -9,9 +9,6 @@
 #include "version.h"
 
 
-// NOT COMPATIBLE WITH QUANTISATION YET
-
-
 // global variables used for TensorFlow Lite (Micro)
 tflite::MicroErrorReporter tflErrorReporter;
 // pull in all the TFLM ops, can remove line and only pull in the TFLM ops you need, if need to reduce compiled size.
@@ -57,13 +54,28 @@ void crop_pad_convert_image(unsigned short *image, TfLiteTensor* input, int imag
           unsigned char new_first_byte  = (R5 << 3) | (R5 >> 2);     // R 0–255
           unsigned char new_second_byte = (G6 << 2) | (G6 >> 4);     // G 0–255
           unsigned char new_third_byte  = (B5 << 3) | (B5 >> 2);     // B 0–255
-          
-          input->data.int8[added] = new_first_byte - 128;
-          added++;
-          input->data.int8[added] = new_second_byte - 128;
-          added++;
-          input->data.int8[added] = new_third_byte - 128;
-          added++;
+  
+          float scale = tflInputTensor->params.scale;
+          int   zp    = tflInputTensor->params.zero_point;
+
+          uint8_t R = new_first_byte;
+          uint8_t G = new_second_byte;
+          uint8_t B = new_third_byte;
+
+          // Convert to float 0–1
+          float r_f = R / 255.0f;
+          float g_f = G / 255.0f;
+          float b_f = B / 255.0f;
+
+          // Quantize properly
+          input->data.int8[added++] = (int8_t)(r_f / scale + zp);
+          input->data.int8[added++] = (int8_t)(g_f / scale + zp);
+          input->data.int8[added++] = (int8_t)(b_f / scale + zp);
+
+          if (i==200) {
+            Serial.println(new_first_byte);
+          }
+
         }
     }
     for (i=0;i<1350;i++) {
@@ -76,6 +88,8 @@ void crop_pad_convert_image(unsigned short *image, TfLiteTensor* input, int imag
 void setup() {
   Serial.begin(9600);
   while (!Serial);
+
+  Serial.println("Test");
 
   // get the TFL representation of the model byte array
   tflModel = tflite::GetModel(model);
@@ -94,7 +108,14 @@ void setup() {
   );
 
   // Allocate memory for the model's input and output tensors
-  tflInterpreter->AllocateTensors();
+  if (tflInterpreter->AllocateTensors() != kTfLiteOk) {
+    Serial.println("AllocateTensors() failed");
+    while (1);
+  }
+
+  // Get pointers for the model's input and output tensors
+  tflInputTensor = tflInterpreter->input(0);
+  tflOutputTensor = tflInterpreter->output(0);
 
   // For testing
   Serial.print("Arena used: ");
@@ -110,15 +131,17 @@ void setup() {
   }
   Serial.println();
 
-  // Get pointers for the model's input and output tensors
-  tflInputTensor = tflInterpreter->input(0);
-  tflOutputTensor = tflInterpreter->output(0);
-
-
   if (!Camera.begin(QCIF, RGB565, 1)) {
     Serial.println("Failed to initialize camera!");
     while (1);
   }
+  // Increase brightness & contrast aggressively
+  Camera.setBrightness(2);   // -2 to +2
+  Camera.setContrast(2);     // -2 to +2
+  Camera.setSaturation(2);   // -2 to +2
+
+  // Boost analog gain
+  Camera.setGain(7);         // 0–7 (7 = strongest gain)
 }
 
 void loop() {
