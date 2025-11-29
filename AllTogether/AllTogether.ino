@@ -32,58 +32,66 @@ const char* WEATHERS[] = {
 
 unsigned short pixels[176 * 144]; // QCIF: 176x144 X 2 bytes per pixel (RGB565)
 
-void crop_pad_convert_image(unsigned short *image, TfLiteTensor* input, int image_size) {
-    int added = 0;
-    int i;
-    for (i=0;i<1350;i++) {
-        input->data.int8[added] = 0x00;
-        added++;
-    }
-    
-    for (i=0;i<image_size;i++) {
-        int pos = (i % 176);
-        if (pos >= 13 && pos < 163) {
-          unsigned char first_byte = image[i] & 0xFF;
-          unsigned char second_byte = (image[i] & 0xFF00) >> 8;
+void preprocess(const uint16_t* src, TfLiteTensor* input) {
+    const int SRC_W = 176;
+    const int SRC_H = 144;
 
-          unsigned char R5 = (first_byte & 0xF8) >> 3;
-          unsigned char G6 = ((first_byte & 0x07) << 3) | ((second_byte & 0xE0) >> 5);
-          unsigned char B5 = (second_byte & 0x1F);
+    const int DST_W = 150;
+    const int DST_H = 150;
 
-          // Convert to RGB888
-          unsigned char new_first_byte  = (R5 << 3) | (R5 >> 2);     // R 0–255
-          unsigned char new_second_byte = (G6 << 2) | (G6 >> 4);     // G 0–255
-          unsigned char new_third_byte  = (B5 << 3) | (B5 >> 2);     // B 0–255
-  
-          float scale = tflInputTensor->params.scale;
-          int   zp    = tflInputTensor->params.zero_point;
+    // horizontal crop window: 13 to 162 (150 pixels)
+    const int CROP_X = 13;
+    const int CROP_Y = 0;  // we will pad vertically
 
-          uint8_t R = new_first_byte;
-          uint8_t G = new_second_byte;
-          uint8_t B = new_third_byte;
+    // vertical padding = 6 rows total (3 top + 3 bottom)
+    const int PAD_TOP = 3;
 
-          // Convert to float 0–1
-          float r_f = R / 255.0f;
-          float g_f = G / 255.0f;
-          float b_f = B / 255.0f;
+    float scale = input->params.scale;
+    int   zp    = input->params.zero_point;
 
-          // Quantize properly
-          input->data.int8[added++] = (int8_t)(r_f / scale + zp);
-          input->data.int8[added++] = (int8_t)(g_f / scale + zp);
-          input->data.int8[added++] = (int8_t)(b_f / scale + zp);
+    int out_i = 0;
 
-          if (i==200) {
-            Serial.println(new_first_byte);
-          }
-
+    // ---- Top pad rows (3 rows of black) ----
+    for (int py = 0; py < PAD_TOP; py++) {
+        for (int px = 0; px < DST_W; px++) {
+            input->data.int8[out_i++] = zp;  // R
+            input->data.int8[out_i++] = zp;  // G
+            input->data.int8[out_i++] = zp;  // B
         }
     }
-    for (i=0;i<1350;i++) {
-        input->data.int8[added] = 0x00;
-        added++;
+
+    // ---- Process camera rows ----
+    for (int y = 0; y < SRC_H; y++) {
+        for (int x = CROP_X; x < CROP_X + DST_W; x++) {
+
+            uint16_t p = src[y * SRC_W + x];
+
+            uint8_t r5 = (p >> 11) & 0x1F;
+            uint8_t g6 = (p >> 5)  & 0x3F;
+            uint8_t b5 =  p        & 0x1F;
+
+            uint8_t R = (r5 << 3) | (r5 >> 2);
+            uint8_t G = (g6 << 2) | (g6 >> 4);
+            uint8_t B = (b5 << 3) | (b5 >> 2);
+
+            //float r = R / 255.0f;
+            //float g = G / 255.0f;
+            //float b = B / 255.0f;
+
+            input->data.int8[out_i++] = (int8_t)((R - zp) / scale);
+            input->data.int8[out_i++] = (int8_t)((G - zp) / scale);
+            input->data.int8[out_i++] = (int8_t)((B - zp) / scale);
+        }
     }
-    Serial.println(added);
+
+    // ---- Bottom pad rows (3 rows) ----
+    while (out_i < DST_W * DST_H * 3) {
+        input->data.int8[out_i++] = zp;
+        input->data.int8[out_i++] = zp;
+        input->data.int8[out_i++] = zp;
+    }
 }
+
 
 void setup() {
   Serial.begin(9600);
@@ -150,7 +158,7 @@ void loop() {
 
     int numPixels = Camera.width() * Camera.height();
 
-    crop_pad_convert_image(pixels, tflInputTensor, numPixels);
+    preprocess(pixels, tflInputTensor);
 
     // Run inferencing
     TfLiteStatus invokeStatus = tflInterpreter->Invoke();
@@ -162,9 +170,7 @@ void loop() {
 
     // Loop through the output tensor values from the model
     for (int i = 0; i < 2; i++) {
-      int8_t value = tflOutputTensor->data.int8[i];
-      float score = (value - tflOutputTensor->params.zero_point) *
-                    tflOutputTensor->params.scale;
+      float score = tflOutputTensor->data.f[i]; 
 
       Serial.print(WEATHERS[i]);
       Serial.print(": ");
