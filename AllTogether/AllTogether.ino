@@ -21,7 +21,7 @@ TfLiteTensor* tflOutputTensor = nullptr;
 
 // Create a static memory buffer for TFLM, the size may need to
 // be adjusted based on the model you are using
-constexpr int tensorArenaSize = 120 * 1024;
+constexpr int tensorArenaSize = 40 * 1024;
 byte tensorArena[tensorArenaSize] __attribute__((aligned(16)));
 
 // array to map weather conditions index to a name
@@ -35,36 +35,21 @@ unsigned short pixels[176 * 144]; // QCIF: 176x144 X 2 bytes per pixel (RGB565)
 void preprocess(const uint16_t* src, TfLiteTensor* input) {
     const int SRC_W = 176;
     const int SRC_H = 144;
-
-    const int DST_W = 150;
-    const int DST_H = 150;
-
-    // horizontal crop window: 13 to 162 (150 pixels)
-    const int CROP_X = 13;
-    const int CROP_Y = 0;  // we will pad vertically
-
-    // vertical padding = 6 rows total (3 top + 3 bottom)
-    const int PAD_TOP = 3;
+    const int DST_W = 48;
+    const int DST_H = 48;
 
     float scale = input->params.scale;
-    int   zp    = input->params.zero_point;
+    int zp = input->params.zero_point;
 
-    int out_i = 0;
+    int i = 0;
 
-    // ---- Top pad rows (3 rows of black) ----
-    for (int py = 0; py < PAD_TOP; py++) {
-        for (int px = 0; px < DST_W; px++) {
-            input->data.int8[out_i++] = zp;  // R
-            input->data.int8[out_i++] = zp;  // G
-            input->data.int8[out_i++] = zp;  // B
-        }
-    }
+    for (int y = 0; y < DST_H; y++) {
+        int sy = y * SRC_H / DST_H;
 
-    // ---- Process camera rows ----
-    for (int y = 0; y < SRC_H; y++) {
-        for (int x = CROP_X; x < CROP_X + DST_W; x++) {
+        for (int x = 0; x < DST_W; x++) {
+            int sx = x * SRC_W / DST_W;
 
-            uint16_t p = src[y * SRC_W + x];
+            uint16_t p = src[sy * SRC_W + sx];
 
             uint8_t r5 = (p >> 11) & 0x1F;
             uint8_t g6 = (p >> 5)  & 0x3F;
@@ -74,24 +59,12 @@ void preprocess(const uint16_t* src, TfLiteTensor* input) {
             uint8_t G = (g6 << 2) | (g6 >> 4);
             uint8_t B = (b5 << 3) | (b5 >> 2);
 
-            //float r = R / 255.0f;
-            //float g = G / 255.0f;
-            //float b = B / 255.0f;
-
-            input->data.int8[out_i++] = (int8_t)((R - zp) / scale);
-            input->data.int8[out_i++] = (int8_t)((G - zp) / scale);
-            input->data.int8[out_i++] = (int8_t)((B - zp) / scale);
+            input->data.int8[i++] = (int8_t)((R - zp) / scale);
+            input->data.int8[i++] = (int8_t)((G - zp) / scale);
+            input->data.int8[i++] = (int8_t)((B - zp) / scale);
         }
     }
-
-    // ---- Bottom pad rows (3 rows) ----
-    while (out_i < DST_W * DST_H * 3) {
-        input->data.int8[out_i++] = zp;
-        input->data.int8[out_i++] = zp;
-        input->data.int8[out_i++] = zp;
-    }
 }
-
 
 void setup() {
   Serial.begin(9600);
