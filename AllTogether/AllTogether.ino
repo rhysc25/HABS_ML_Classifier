@@ -43,6 +43,7 @@ const char* LABELS[] = {
 // Image preprocessing
 // ===============================
 void preprocess(const uint16_t* src, TfLiteTensor* input) {
+/*
   const int SRC_W = 176;
   const int SRC_H = 144;
   const int DST_W = 48;
@@ -69,26 +70,25 @@ void preprocess(const uint16_t* src, TfLiteTensor* input) {
       uint8_t G = (g6 << 2) | (g6 >> 4);
       uint8_t B = (b5 << 3) | (b5 >> 2);
 
-      // Normalize to [0,1]
-      float rf = R / 255.0f;
-      float gf = G / 255.0f;
-      float bf = B / 255.0f;
+      // Luminance (ITU-R BT.601)
+      uint8_t Y = (77 * R + 150 * G + 29 * B) >> 8;
 
-      // Quantize
-      int32_t rq = (int32_t)round(rf / scale) + zp;
-      int32_t gq = (int32_t)round(gf / scale) + zp;
-      int32_t bq = (int32_t)round(bf / scale) + zp;
+      float yf = Y / 255.0f;
 
-      rq = constrain(rq, -128, 127);
-      gq = constrain(gq, -128, 127);
-      bq = constrain(bq, -128, 127);
+      int32_t q = (int32_t)round(yf / scale) + zp;
+      q = constrain(q, -128, 127);
 
-      input->data.int8[idx++] = (int8_t)rq;
-      input->data.int8[idx++] = (int8_t)gq;
-      input->data.int8[idx++] = (int8_t)bq;
+      input->data.int8[idx++] = (int8_t)q;
     }
   }
+  */
+
+  for (int i = 0; i < inputTensor->bytes; i++) {
+    inputTensor->data.int8[i] = random(-128, 127);
+  }
+
 }
+
 
 // ===============================
 // Setup

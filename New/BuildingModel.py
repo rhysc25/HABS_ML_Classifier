@@ -4,9 +4,6 @@ from pathlib import Path
 from PIL import Image
 import os
 
-# =========================
-# CONFIG
-# =========================
 DATASET_DIR = "C:/Cambridge/Societies/HABS/dataset"
 IMG_SIZE = 48
 BATCH_SIZE = 32
@@ -17,9 +14,8 @@ SEED = 123
 # MODEL
 # =========================
 model = tf.keras.Sequential([
-    tf.keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3)),
+    tf.keras.Input(shape=(IMG_SIZE, IMG_SIZE, 1)),
 
-    # IMPORTANT: explicit normalization
     tf.keras.layers.Rescaling(1.0 / 255.0),
 
     tf.keras.layers.Conv2D(8, 3, activation='relu'),
@@ -40,8 +36,6 @@ model.compile(
     metrics=['accuracy']
 )
 
-model.summary()
-
 # =========================
 # DATASETS
 # =========================
@@ -51,7 +45,8 @@ train_ds = tf.keras.utils.image_dataset_from_directory(
     subset="training",
     seed=SEED,
     image_size=(IMG_SIZE, IMG_SIZE),
-    batch_size=BATCH_SIZE
+    batch_size=BATCH_SIZE,
+    color_mode="grayscale"
 )
 
 val_ds = tf.keras.utils.image_dataset_from_directory(
@@ -60,41 +55,32 @@ val_ds = tf.keras.utils.image_dataset_from_directory(
     subset="validation",
     seed=SEED,
     image_size=(IMG_SIZE, IMG_SIZE),
-    batch_size=BATCH_SIZE
+    batch_size=BATCH_SIZE,
+    color_mode="grayscale"
 )
 
-AUTOTUNE = tf.data.AUTOTUNE
-train_ds = train_ds.cache().shuffle(500).prefetch(AUTOTUNE)
-val_ds = val_ds.cache().prefetch(AUTOTUNE)
+train_ds = train_ds.cache().shuffle(500).prefetch(tf.data.AUTOTUNE)
+val_ds = val_ds.cache().prefetch(tf.data.AUTOTUNE)
 
-# =========================
-# TRAIN
-# =========================
-history = model.fit(
-    train_ds,
-    validation_data=val_ds,
-    epochs=EPOCHS
-)
-
-print("Final val accuracy:", history.history["val_accuracy"][-1])
+model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS)
 
 def representative_dataset():
     base = Path(DATASET_DIR)
     images = list(base.glob("*/*.png"))[:100]
 
     for p in images:
-        img = Image.open(p).resize((IMG_SIZE, IMG_SIZE))
+        img = Image.open(p).convert("L").resize((IMG_SIZE, IMG_SIZE))
         img = np.array(img, dtype=np.float32) / 255.0
-        img = np.expand_dims(img, axis=0)
+        img = np.expand_dims(img, axis=(0, -1))
         yield [img]
 
 converter = tf.lite.TFLiteConverter.from_keras_model(model)
 converter.optimizations = [tf.lite.Optimize.DEFAULT]
 converter.representative_dataset = representative_dataset
 
-converter.target_spec.supported_ops = [
-    tf.lite.OpsSet.TFLITE_BUILTINS_INT8
-]
+#converter.target_spec.supported_ops = [
+#    tf.lite.OpsSet.TFLITE_BUILTINS_INT8
+#]
 
 converter.inference_input_type = tf.int8
 converter.inference_output_type = tf.float32
