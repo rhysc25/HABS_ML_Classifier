@@ -1,6 +1,6 @@
 import os
 
-tflite_path = "cloud_classification_model_int8.tflite"
+#tflite_path = "cloud_classification_model_int8.tflite"
 tflite_path = "cloud_vs_clear_48x48_int8.tflite"
 header_path = "model.h"
 

@@ -48,7 +48,6 @@ void preprocess(const uint16_t* src, TfLiteTensor* input) {
 
         for (int x = 0; x < DST_W; x++) {
             int sx = x * SRC_W / DST_W;
-
             uint16_t p = src[sy * SRC_W + sx];
 
             uint8_t r5 = (p >> 11) & 0x1F;
@@ -59,9 +58,9 @@ void preprocess(const uint16_t* src, TfLiteTensor* input) {
             uint8_t G = (g6 << 2) | (g6 >> 4);
             uint8_t B = (b5 << 3) | (b5 >> 2);
 
-            input->data.int8[i++] = (int8_t)((R - zp) / scale);
-            input->data.int8[i++] = (int8_t)((G - zp) / scale);
-            input->data.int8[i++] = (int8_t)((B - zp) / scale);
+            input->data.int8[i++] = (int8_t)(R / scale + zp);
+            input->data.int8[i++] = (int8_t)(G / scale + zp);
+            input->data.int8[i++] = (int8_t)(B / scale + zp);
         }
     }
 }
@@ -71,6 +70,13 @@ void setup() {
   while (!Serial);
 
   Serial.println("Test");
+
+  Serial.print("Input type: ");
+  Serial.println(tflInputTensor->type);        // should be 9 (kTfLiteInt8)
+  Serial.print("Scale: ");
+  Serial.println(tflInputTensor->params.scale, 6);  // should be ~0.007–0.02
+  Serial.print("Zero point: ");
+  Serial.println(tflInputTensor->params.zero_point); // around -128..127
 
   // get the TFL representation of the model byte array
   tflModel = tflite::GetModel(model);

@@ -19,7 +19,7 @@ from PIL import Image
 
 model = tf.keras.Sequential([
     tf.keras.Input(shape=(150,150,3)), # Defined the input shape for out image
-    #tf.keras.layers.Rescaling(scale=1./255), # Ensures all RGB values are between 0 and 1
+    tf.keras.layers.Rescaling(scale=1./255), # Ensures all RGB values are between 0 and 1
     tf.keras.layers.Conv2D(filters=2, kernel_size=(3,3), activation="relu"), # Uses 8 3x3 filters for edge detection
     # ReLU removes negative values. Using for basic edge detection
     tf.keras.layers.MaxPooling2D(), #This takes the feature map and performs either min, max or average
