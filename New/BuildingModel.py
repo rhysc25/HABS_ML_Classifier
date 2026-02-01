@@ -10,22 +10,25 @@ import os
 DATASET_DIR = "C:/Cambridge/Societies/HABS/dataset"
 IMG_SIZE = 48
 BATCH_SIZE = 32
-EPOCHS = 10
+EPOCHS = 15
 SEED = 123
 
 # =========================
-# MODEL (TinyML friendly)
+# MODEL
 # =========================
 model = tf.keras.Sequential([
     tf.keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3)),
 
-    tf.keras.layers.Conv2D(8, (3, 3), activation='relu'),
+    # IMPORTANT: explicit normalization
+    tf.keras.layers.Rescaling(1.0 / 255.0),
+
+    tf.keras.layers.Conv2D(8, 3, activation='relu'),
     tf.keras.layers.MaxPooling2D(),
 
-    tf.keras.layers.Conv2D(16, (3, 3), activation='relu'),
+    tf.keras.layers.Conv2D(16, 3, activation='relu'),
     tf.keras.layers.MaxPooling2D(),
 
-    tf.keras.layers.Conv2D(32, (3, 3), activation='relu'),
+    tf.keras.layers.Conv2D(32, 3, activation='relu'),
 
     tf.keras.layers.GlobalAveragePooling2D(),
     tf.keras.layers.Dense(2, activation='softmax')
@@ -33,81 +36,61 @@ model = tf.keras.Sequential([
 
 model.compile(
     optimizer='adam',
-    loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
+    loss='sparse_categorical_crossentropy',
     metrics=['accuracy']
 )
 
 model.summary()
 
 # =========================
-# DATASETS (48x48 RGB)
+# DATASETS
 # =========================
-train_dataset = tf.keras.utils.image_dataset_from_directory(
-    directory=DATASET_DIR,
-    labels="inferred",
-    label_mode="int",
-    color_mode="rgb",
-    batch_size=BATCH_SIZE,
-    image_size=(IMG_SIZE, IMG_SIZE),
-    shuffle=True,
-    seed=SEED,
+train_ds = tf.keras.utils.image_dataset_from_directory(
+    DATASET_DIR,
     validation_split=0.2,
-    subset="training"
+    subset="training",
+    seed=SEED,
+    image_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE
 )
 
-validation_dataset = tf.keras.utils.image_dataset_from_directory(
-    directory=DATASET_DIR,
-    labels="inferred",
-    label_mode="int",
-    color_mode="rgb",
-    batch_size=BATCH_SIZE,
-    image_size=(IMG_SIZE, IMG_SIZE),
-    shuffle=True,
-    seed=SEED,
+val_ds = tf.keras.utils.image_dataset_from_directory(
+    DATASET_DIR,
     validation_split=0.2,
-    subset="validation"
+    subset="validation",
+    seed=SEED,
+    image_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE
 )
 
 AUTOTUNE = tf.data.AUTOTUNE
-train_dataset = train_dataset.cache().shuffle(1000).prefetch(buffer_size=AUTOTUNE)
-validation_dataset = validation_dataset.cache().prefetch(buffer_size=AUTOTUNE)
+train_ds = train_ds.cache().shuffle(500).prefetch(AUTOTUNE)
+val_ds = val_ds.cache().prefetch(AUTOTUNE)
 
 # =========================
 # TRAIN
 # =========================
 history = model.fit(
-    train_dataset,
-    validation_data=validation_dataset,
+    train_ds,
+    validation_data=val_ds,
     epochs=EPOCHS
 )
 
-print("\nLatest validation accuracy:", history.history['val_accuracy'][-1])
+print("Final val accuracy:", history.history["val_accuracy"][-1])
 
-# =========================
-# REPRESENTATIVE DATASET
-# (NO NORMALIZATION!)
-# =========================
-def representative_data_gen():
-    base_dir = Path(DATASET_DIR)
+def representative_dataset():
+    base = Path(DATASET_DIR)
+    images = list(base.glob("*/*.png"))[:100]
 
-    cloudy_imgs = list((base_dir / "cloudy").glob("*.png"))[:50]
-    clear_imgs  = list((base_dir / "clear").glob("*.png"))[:50]
-
-    imgs = cloudy_imgs + clear_imgs
-
-    for img_path in imgs:
-        img = Image.open(img_path).resize((IMG_SIZE, IMG_SIZE))
-        img = np.array(img, dtype=np.float32)  # 0–255 RGB
+    for p in images:
+        img = Image.open(p).resize((IMG_SIZE, IMG_SIZE))
+        img = np.array(img, dtype=np.float32) / 255.0
         img = np.expand_dims(img, axis=0)
         yield [img]
 
-# =========================
-# TFLITE INT8 CONVERSION
-# (INT8 input, FLOAT output)
-# =========================
 converter = tf.lite.TFLiteConverter.from_keras_model(model)
 converter.optimizations = [tf.lite.Optimize.DEFAULT]
-converter.representative_dataset = representative_data_gen
+converter.representative_dataset = representative_dataset
 
 converter.target_spec.supported_ops = [
     tf.lite.OpsSet.TFLITE_BUILTINS_INT8
@@ -118,12 +101,7 @@ converter.inference_output_type = tf.float32
 
 tflite_model = converter.convert()
 
-# =========================
-# SAVE MODEL
-# =========================
-MODEL_FILE = "cloud_vs_clear_48x48_int8.tflite"
-with open(MODEL_FILE, "wb") as f:
+with open("cloud_vs_clear_48x48_int8.tflite", "wb") as f:
     f.write(tflite_model)
 
-print("\nSaved:", MODEL_FILE)
-print("Model size:", os.path.getsize(MODEL_FILE), "bytes")
+print("Model size:", os.path.getsize("cloud_vs_clear_48x48_int8.tflite"))

@@ -8,154 +8,170 @@
 #include <tensorflow/lite/schema/schema_generated.h>
 #include "version.h"
 
+// ===============================
+// TensorFlow Lite globals
+// ===============================
+tflite::MicroErrorReporter errorReporter;
+tflite::AllOpsResolver resolver;
 
-// global variables used for TensorFlow Lite (Micro)
-tflite::MicroErrorReporter tflErrorReporter;
-// pull in all the TFLM ops, can remove line and only pull in the TFLM ops you need, if need to reduce compiled size.
-tflite::AllOpsResolver tflOpsResolver;
+const tflite::Model* modelTf = nullptr;
+tflite::MicroInterpreter* interpreter = nullptr;
 
-const tflite::Model* tflModel = nullptr;
-tflite::MicroInterpreter* tflInterpreter = nullptr;
-TfLiteTensor* tflInputTensor = nullptr;
-TfLiteTensor* tflOutputTensor = nullptr;
+TfLiteTensor* inputTensor = nullptr;
+TfLiteTensor* outputTensor = nullptr;
 
-// Create a static memory buffer for TFLM, the size may need to
-// be adjusted based on the model you are using
-constexpr int tensorArenaSize = 40 * 1024;
-byte tensorArena[tensorArenaSize] __attribute__((aligned(16)));
+// ===============================
+// Tensor arena
+// ===============================
+constexpr int kTensorArenaSize = 40 * 1024;
+uint8_t tensorArena[kTensorArenaSize] __attribute__((aligned(16)));
 
-// array to map weather conditions index to a name
-const char* WEATHERS[] = {
+// ===============================
+// Camera buffer (QCIF RGB565)
+// ===============================
+unsigned short pixels[176 * 144];
+
+// ===============================
+// Labels
+// ===============================
+const char* LABELS[] = {
   "clear",
   "cloudy"
 };
 
-unsigned short pixels[176 * 144]; // QCIF: 176x144 X 2 bytes per pixel (RGB565)
-
+// ===============================
+// Image preprocessing
+// ===============================
 void preprocess(const uint16_t* src, TfLiteTensor* input) {
-    const int SRC_W = 176;
-    const int SRC_H = 144;
-    const int DST_W = 48;
-    const int DST_H = 48;
+  const int SRC_W = 176;
+  const int SRC_H = 144;
+  const int DST_W = 48;
+  const int DST_H = 48;
 
-    float scale = input->params.scale;
-    int zp = input->params.zero_point;
+  float scale = input->params.scale;
+  int zp = input->params.zero_point;
 
-    int i = 0;
+  int idx = 0;
 
-    for (int y = 0; y < DST_H; y++) {
-        int sy = y * SRC_H / DST_H;
+  for (int y = 0; y < DST_H; y++) {
+    int sy = y * SRC_H / DST_H;
 
-        for (int x = 0; x < DST_W; x++) {
-            int sx = x * SRC_W / DST_W;
-            uint16_t p = src[sy * SRC_W + sx];
+    for (int x = 0; x < DST_W; x++) {
+      int sx = x * SRC_W / DST_W;
+      uint16_t p = src[sy * SRC_W + sx];
 
-            uint8_t r5 = (p >> 11) & 0x1F;
-            uint8_t g6 = (p >> 5)  & 0x3F;
-            uint8_t b5 =  p        & 0x1F;
+      // RGB565 → RGB888
+      uint8_t r5 = (p >> 11) & 0x1F;
+      uint8_t g6 = (p >> 5)  & 0x3F;
+      uint8_t b5 =  p        & 0x1F;
 
-            uint8_t R = (r5 << 3) | (r5 >> 2);
-            uint8_t G = (g6 << 2) | (g6 >> 4);
-            uint8_t B = (b5 << 3) | (b5 >> 2);
+      uint8_t R = (r5 << 3) | (r5 >> 2);
+      uint8_t G = (g6 << 2) | (g6 >> 4);
+      uint8_t B = (b5 << 3) | (b5 >> 2);
 
-            input->data.int8[i++] = (int8_t)(R / scale + zp);
-            input->data.int8[i++] = (int8_t)(G / scale + zp);
-            input->data.int8[i++] = (int8_t)(B / scale + zp);
-        }
+      // Normalize to [0,1]
+      float rf = R / 255.0f;
+      float gf = G / 255.0f;
+      float bf = B / 255.0f;
+
+      // Quantize
+      int32_t rq = (int32_t)round(rf / scale) + zp;
+      int32_t gq = (int32_t)round(gf / scale) + zp;
+      int32_t bq = (int32_t)round(bf / scale) + zp;
+
+      rq = constrain(rq, -128, 127);
+      gq = constrain(gq, -128, 127);
+      bq = constrain(bq, -128, 127);
+
+      input->data.int8[idx++] = (int8_t)rq;
+      input->data.int8[idx++] = (int8_t)gq;
+      input->data.int8[idx++] = (int8_t)bq;
     }
+  }
 }
 
+// ===============================
+// Setup
+// ===============================
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   while (!Serial);
 
-  Serial.println("Test");
+  Serial.println("\nCloud vs Clear — TinyML");
 
-  Serial.print("Input type: ");
-  Serial.println(tflInputTensor->type);        // should be 9 (kTfLiteInt8)
-  Serial.print("Scale: ");
-  Serial.println(tflInputTensor->params.scale, 6);  // should be ~0.007–0.02
-  Serial.print("Zero point: ");
-  Serial.println(tflInputTensor->params.zero_point); // around -128..127
-
-  // get the TFL representation of the model byte array
-  tflModel = tflite::GetModel(model);
-  if (tflModel->version() != TFLITE_SCHEMA_VERSION) {
+  // Load model
+  modelTf = tflite::GetModel(model);
+  if (modelTf->version() != TFLITE_SCHEMA_VERSION) {
     Serial.println("Model schema mismatch!");
     while (1);
   }
 
-  // Create an interpreter to run the model
-  //tflInterpreter = new tflite::MicroInterpreter(tflModel, tflOpsResolver, tensorArena, tensorArenaSize, &tflErrorReporter);
-  tflInterpreter = new tflite::MicroInterpreter(
-    tflModel,
-    tflOpsResolver,
+  // Create interpreter
+  interpreter = new tflite::MicroInterpreter(
+    modelTf,
+    resolver,
     tensorArena,
-    tensorArenaSize
+    kTensorArenaSize
   );
 
-  // Allocate memory for the model's input and output tensors
-  if (tflInterpreter->AllocateTensors() != kTfLiteOk) {
-    Serial.println("AllocateTensors() failed");
+  // Allocate tensors
+  if (interpreter->AllocateTensors() != kTfLiteOk) {
+    Serial.println("AllocateTensors failed");
     while (1);
   }
 
-  // Get pointers for the model's input and output tensors
-  tflInputTensor = tflInterpreter->input(0);
-  tflOutputTensor = tflInterpreter->output(0);
+  inputTensor = interpreter->input(0);
+  outputTensor = interpreter->output(0);
 
-  // For testing
+  // Debug info
   Serial.print("Arena used: ");
-  Serial.println(tflInterpreter->arena_used_bytes());
+  Serial.println(interpreter->arena_used_bytes());
 
-  Serial.print("Input tensor bytes: ");
-  Serial.println(tflInputTensor->bytes);
+  Serial.print("Input scale: ");
+  Serial.println(inputTensor->params.scale, 6);
+  Serial.print("Input zero point: ");
+  Serial.println(inputTensor->params.zero_point);
 
-  Serial.print("Input dims: ");
-  for (int i=0; i<tflInputTensor->dims->size; i++) {
-    Serial.print(tflInputTensor->dims->data[i]);
+  Serial.print("Input shape: ");
+  for (int i = 0; i < inputTensor->dims->size; i++) {
+    Serial.print(inputTensor->dims->data[i]);
     Serial.print(" ");
   }
   Serial.println();
 
+  // Camera init
   if (!Camera.begin(QCIF, RGB565, 1)) {
-    Serial.println("Failed to initialize camera!");
+    Serial.println("Camera init failed!");
     while (1);
   }
-  // Increase brightness & contrast aggressively
-  Camera.setBrightness(2);   // -2 to +2
-  Camera.setContrast(2);     // -2 to +2
-  Camera.setSaturation(2);   // -2 to +2
 
-  // Boost analog gain
-  Camera.setGain(7);         // 0–7 (7 = strongest gain)
+  Camera.setBrightness(2);
+  Camera.setContrast(2);
+  Camera.setSaturation(2);
+  Camera.setGain(7);
+
+  Serial.println("Ready — send 'c' to capture");
 }
 
+// ===============================
+// Loop
+// ===============================
 void loop() {
   if (Serial.read() == 'c') {
     Camera.readFrame(pixels);
 
-    int numPixels = Camera.width() * Camera.height();
+    preprocess(pixels, inputTensor);
 
-    preprocess(pixels, tflInputTensor);
-
-    // Run inferencing
-    TfLiteStatus invokeStatus = tflInterpreter->Invoke();
-    if (invokeStatus != kTfLiteOk) {
-      Serial.println("Invoke failed!");
-      while (1);
+    if (interpreter->Invoke() != kTfLiteOk) {
+      Serial.println("Invoke failed");
       return;
     }
 
-    // Loop through the output tensor values from the model
     for (int i = 0; i < 2; i++) {
-      float score = tflOutputTensor->data.f[i]; 
-
-      Serial.print(WEATHERS[i]);
+      Serial.print(LABELS[i]);
       Serial.print(": ");
-      Serial.println(score, 6);
+      Serial.println(outputTensor->data.f[i], 5);
     }
     Serial.println();
-
   }
 }
