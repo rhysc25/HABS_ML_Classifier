@@ -1,4 +1,5 @@
-//#include <Arduino_OV767X.h>
+// Weather Classifier Set Up ///////////////////////////////////////////////////////////////////////////////////
+
 #include <TinyMLShield.h>
 #include "model.h"
 
@@ -21,13 +22,38 @@ TfLiteTensor* outputTensor = nullptr;
 
 constexpr int kTensorArenaSize = 120 * 1024;
 uint8_t tensorArena[kTensorArenaSize] __attribute__((aligned(16)));
-uint8_t pixels[160 * 120];
 uint8_t newpixels[48*48];
 
-const char* LABELS[] = {
-  "clear",
-  "cloudy"
+int classifierOKFlag = true;
+
+// Persistent Storage Set Up ///////////////////////////////////////////////////////////////////////////////////
+
+#include <Arduino.h>
+#include "kvstore_global_api.h"
+
+struct DataRecord {
+  uint32_t timestamp;   // milliseconds since boot
+  float pressure;   // in kPa
+  float temperature;  // in °C
+  float ax;
+  float ay;
+  float az;
+  float weather;         // A measurement of how likely it is to be cloudy
 };
+
+uint32_t starttime;
+int recordCount;
+int status;
+
+// For Gyroscope, Barometer and Thermometer
+
+#include <Arduino_LSM9DS1.h>
+#include <Arduino_LPS22HB.h>
+
+float ax, ay, az;
+int sensorsOKFlag = true;
+
+// Classifier Preprocess Functions ///////////////////////////////////////////////////////////////////////////////////
 
 void resizeQQVGAto48(const uint8_t* input, uint8_t* output) {
 
@@ -82,22 +108,26 @@ void inputFill(const uint8_t* newpixels, TfLiteTensor* input){
   }
 }
 
-void setup() {
-  Serial.begin(115200);
-  while (!Serial);
+// Everything Set Up ///////////////////////////////////////////////////////////////////////////////////
 
-  Serial.println("\nCloud vs Clear — TinyML");
+void setup() {
+
+  if (!IMU.begin()) {
+    sensorsOKFlag = false;
+  }
+
+  if (!BARO.begin()) {
+    sensorsOKFlag = false;
+  }
 
   if (!Camera.begin(QQVGA, GRAYSCALE, 1, OV7675)) {
-    Serial.println("Failed to initialize camera!");
-    while (1);
+    classifierOKFlag = false;
   }
 
   // Load model
   modelTf = tflite::GetModel(model);
   if (modelTf->version() != TFLITE_SCHEMA_VERSION) {
-    Serial.println("Model schema mismatch!");
-    while (1);
+    classifierOKFlag = false;
   }
 
   // Create interpreter
@@ -112,55 +142,112 @@ void setup() {
 
   // Allocate tensors
   if (interpreter->AllocateTensors() != kTfLiteOk) {
-    Serial.println("AllocateTensors failed");
-    while (1);
+    classifierOKFlag = false;
   }
 
   inputTensor = interpreter->input(0);
   outputTensor = interpreter->output(0);
 
-  // Debug info
-  Serial.print("Arena used: ");
-  Serial.println(interpreter->arena_used_bytes());
 
-  Serial.print("Input scale: ");
-  Serial.println(inputTensor->params.scale, 6);
-  Serial.print("Input zero point: ");
-  Serial.println(inputTensor->params.zero_point);
-
-  Serial.print("Input shape: ");
-  for (int i = 0; i < inputTensor->dims->size; i++) {
-    Serial.print(inputTensor->dims->data[i]);
-    Serial.print(" ");
+  recordCount = 0;
+  starttime = millis();
+  status = kv_get("record_count", &recordCount, sizeof(recordCount), 0);
+  if (status != 0) {
+    recordCount = 0;
   }
-  Serial.println();
 
-  Serial.print("Input type: ");
-  Serial.println(inputTensor->type);
-  Serial.print("Output type: ");
-  Serial.println(outputTensor->type);
+  Serial.begin(115200);
 
-  Serial.println("Ready — send 'c' to capture");
+  unsigned long t = millis();
+  bool serialConnected = false;
+
+  while (millis() - t < 10000) {  // wait up to 10 seconds
+    if (Serial) {
+      serialConnected = true;
+      break;
+    }
+  }
+
+  delay(30000);
+
+  if (serialConnected) {
+    Serial.print("Total records: ");
+    Serial.println(recordCount);
+
+    for (int i = 0; i < recordCount; i++) {
+
+      char key[16];
+      sprintf(key, "log_%03d", i);
+
+      DataRecord record;
+      size_t actualSize;
+
+      if (kv_get(key, &record, sizeof(record), &actualSize) == 0) {
+        Serial.print(record.timestamp);
+        Serial.print(",");
+        Serial.print(record.pressure);
+        Serial.print(",");
+        Serial.print(record.temperature);
+        Serial.print(",");
+        Serial.print(record.ax);
+        Serial.print(",");
+        Serial.print(record.ay);
+        Serial.print(",");
+        Serial.print(record.az);
+        Serial.print(",");
+        Serial.println(record.weather);
+      } else {
+        Serial.print("Initial stored data failed to be retrieved");
+      }
+    }
+  } 
+
 }
 
+
 void loop() {
-  if (Serial.read() == 'c') {
 
-    Camera.readFrame(pixels);
+  delay(10000);
+  
+  DataRecord record;
 
-    resizeQQVGAto48(pixels, newpixels);
-    inputFill(newpixels, inputTensor);
+  Camera.readFrame(pixels);
 
-    if (interpreter->Invoke() != kTfLiteOk) {
-      Serial.println("Invoke failed");
-      return;
-    }
+  resizeQQVGAto48(pixels, newpixels);
+  inputFill(newpixels, inputTensor);
 
-    for (int i = 0; i < 2; i++) {
-      Serial.print(LABELS[i]);
-      Serial.print(": ");
-      Serial.println(outputTensor->data.f[i], 5);
-    }
-    Serial.println();
+  if (interpreter->Invoke() != kTfLiteOk) {
+    return;
+  }
+
+  // Accelerometer
+  if (IMU.accelerationAvailable()) {
+    IMU.readAcceleration(ax, ay, az);
+  }
+
+  // Pressure
+  float pressure = BARO.readPressure();       // in kPa
+  float temperature = BARO.readTemperature(); // in °C
+
+  record.timestamp = millis() - starttime;
+  record.pressure = pressure;
+  record.temperature = temperature;
+  record.ax = ax;
+  record.ay = ay;
+  record.az = az;
+  record.weather = outputTensor->data.f[1];;
+
+  char key[16];
+  sprintf(key, "log_%03d", recordCount);
+
+  status = kv_set(key, &record, sizeof(record), 0);
+
+  if (status == 0) {
+    recordCount++;
+    status = kv_set("record_count", &recordCount, sizeof(recordCount), 0);
+
+    if (status != 0) {
+      while (1);
+    } 
   }
 }
